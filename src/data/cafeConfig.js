@@ -78,5 +78,19 @@ export const CAFE_CONFIG = {
         addons: [{ name: "Extra Saus Keju", price: 4000 }]
       }
     }
+    {
+      id: "snack-2",
+      name: "Mac&Cheese",
+      category: "Camilan",
+      price: 25000,
+      image: "https://images.unsplash.com/photo-1573080496219-bb080dd4f877?auto=format&fit=crop&w=600&q=80",
+      description: "Kentang goreng renyah berbalut minyak truffle dan taburan keju parmesan.",
+      popular: false,
+      options: {
+        addons: [{ name: "Extra Saus Keju", price: 4000 }
+                 { name: "Chili Oil", price: 5000 }
+        ]         
+      }
+    }
   ]
 };

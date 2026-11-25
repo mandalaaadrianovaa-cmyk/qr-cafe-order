@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
   Coffee,
@@ -19,8 +19,8 @@ import {
   Lock,
 } from 'lucide-react';
 import { CAFE_CONFIG } from './data/cafeConfig';
+import { supabase } from './supabaseClient';
 
-const STORAGE_ORDERS_KEY = 'kala_roastery_orders_v1';
 const STAFF_PIN = '1234'; // Bisa diganti sesuai kebutuhan kafe
 
 const formatIDR = (amount) => {
@@ -42,6 +42,39 @@ const getInitialTabFromHash = () => {
   if (hash === '#dapur' || hash === '#kitchen') return 'kitchen';
   if (hash === '#qr' || hash === '#qr-meja') return 'qr';
   return 'menu';
+};
+
+const mapDbRowToOrder = (row) => {
+  const rawItems = Array.isArray(row.items) ? row.items : [];
+  const computedSubtotal = rawItems.reduce(
+    (sum, item) => sum + Number(item.unitPrice || 0) * Number(item.qty || 1),
+    0
+  );
+  const total = Number(row.total_price ?? computedSubtotal);
+  const taxAmount = Math.max(0, total - computedSubtotal);
+
+  return {
+    id: row.id,
+    orderCode: row.order_code || row.id,
+    createdAt: row.created_at
+      ? new Date(row.created_at).toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : '',
+    table: row.is_takeaway
+      ? 'Takeaway'
+      : row.table_number
+      ? `Meja ${row.table_number}`
+      : 'Takeaway',
+    customerName: row.customer_name || 'Tamu Kafe',
+    paymentMethod: row.payment_method || 'QRIS',
+    status: row.status || 'Menunggu Masak',
+    items: rawItems,
+    subtotal: computedSubtotal,
+    taxAmount,
+    total,
+  };
 };
 
 export default function App() {
@@ -71,15 +104,8 @@ export default function App() {
   const [checkoutStep, setCheckoutStep] = useState('cart'); // 'cart' | 'qris' | 'receipt'
   const [activeReceipt, setActiveReceipt] = useState(null);
 
-  // State Pesanan (Sinkron lintas tab via localStorage)
-  const [orders, setOrders] = useState(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_ORDERS_KEY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  // State Pesanan (Sinkron via Supabase)
+  const [orders, setOrders] = useState([]);
 
   // State QR Generator
   const [totalTables, setTotalTables] = useState(10);
@@ -89,27 +115,40 @@ export default function App() {
       : 'https://kafeanda.com'
   );
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(orders));
-    } catch {
-      // Abaikan jika storage penuh
+  const fetchOrders = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Gagal mengambil pesanan dari Supabase:', error);
+      return;
     }
-  }, [orders]);
+
+    if (Array.isArray(data)) {
+      setOrders(data.map(mapDbRowToOrder));
+    }
+  }, []);
 
   useEffect(() => {
-    const handleStorageChange = (e) => {
-      if (e.key === STORAGE_ORDERS_KEY && e.newValue) {
-        try {
-          setOrders(JSON.parse(e.newValue));
-        } catch {
-          // Abaikan data korup
+    fetchOrders();
+
+    const channel = supabase
+      .channel('public-orders-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders' },
+        () => {
+          fetchOrders();
         }
-      }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
     };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
-  }, []);
+  }, [fetchOrders]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -221,23 +260,45 @@ export default function App() {
   const taxAmount = Math.round((subtotal * (CAFE_CONFIG.taxPercentage || 0)) / 100);
   const grandTotal = subtotal + taxAmount;
 
-  const finalizeOrder = () => {
+  const finalizeOrder = async () => {
     if (cart.length === 0) return;
-    const newOrder = {
-      id: `ORD-${Math.floor(100000 + Math.random() * 900000)}`,
-      createdAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-      table: tableNumber ? `Meja ${tableNumber}` : 'Takeaway',
-      customerName: customerName.trim() || 'Tamu Kafe',
-      paymentMethod,
-      status: paymentMethod === 'QRIS' ? 'Menunggu Masak' : 'Konfirmasi Kasir',
+
+    const orderCode = `ORD-${Math.floor(100000 + Math.random() * 900000)}`;
+    const initialStatus = paymentMethod === 'QRIS' ? 'Menunggu Masak' : 'Konfirmasi Kasir';
+    const trimmedName = customerName.trim() || 'Tamu Kafe';
+
+    const payload = {
+      order_code: orderCode,
+      table_number: tableNumber || null,
+      is_takeaway: !tableNumber,
       items: cart,
+      total_price: grandTotal,
+      status: initialStatus,
+    };
+
+    const { data, error } = await supabase
+      .from('orders')
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Gagal menyimpan pesanan ke Supabase:', error);
+      alert('Gagal mengirim pesanan. Coba beberapa saat lagi ya.');
+      return;
+    }
+
+    const mappedOrder = {
+      ...mapDbRowToOrder(data),
+      customerName: trimmedName,
+      paymentMethod,
       subtotal,
       taxAmount,
       total: grandTotal,
     };
 
-    setOrders((prev) => [newOrder, ...prev]);
-    setActiveReceipt(newOrder);
+    setOrders((prev) => [mappedOrder, ...prev]);
+    setActiveReceipt(mappedOrder);
     setCart([]);
     setCustomerName('');
     setCheckoutStep('receipt');
@@ -252,7 +313,18 @@ export default function App() {
     }
   };
 
-  const updateOrderStatus = (orderId, nextStatus) => {
+  const updateOrderStatus = async (orderId, nextStatus) => {
+    const { error } = await supabase
+      .from('orders')
+      .update({ status: nextStatus })
+      .eq('id', orderId);
+
+    if (error) {
+      console.error('Gagal mengupdate status pesanan:', error);
+      alert('Gagal mengubah status pesanan.');
+      return;
+    }
+
     setOrders((prev) =>
       prev.map((ord) => (ord.id === orderId ? { ...ord, status: nextStatus } : ord))
     );
@@ -261,7 +333,18 @@ export default function App() {
     }
   };
 
-  const clearOrders = () => {
+  const clearOrders = async () => {
+    const { error } = await supabase
+      .from('orders')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (error) {
+      console.error('Gagal membersihkan riwayat pesanan:', error);
+      alert('Gagal membersihkan riwayat pesanan.');
+      return;
+    }
+
     setOrders([]);
     setActiveReceipt(null);
   };
@@ -513,7 +596,7 @@ export default function App() {
         </main>
       )}
 
-      {/* TAB 2: KITCHEN / CASHIER DISPLAY (VISUAL DIPERTAHANKAN) */}
+      {/* TAB 2: KITCHEN / CASHIER DISPLAY */}
       {activeTab === 'kitchen' && (
         <main className="mx-auto max-w-6xl px-4 py-6">
           <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -553,7 +636,7 @@ export default function App() {
                     <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
                       <div>
                         <span className="font-mono text-xs font-bold text-amber-400">
-                          {ord.id}
+                          {ord.orderCode || ord.id}
                         </span>
                         <p className="text-sm font-bold text-white">
                           {ord.table} • {ord.customerName}
@@ -633,7 +716,7 @@ export default function App() {
         </main>
       )}
 
-      {/* TAB 3: TABLE QR GENERATOR (VISUAL DIPERTAHANKAN) */}
+      {/* TAB 3: TABLE QR GENERATOR */}
       {activeTab === 'qr' && (
         <main className="mx-auto max-w-6xl px-4 py-6">
           <div className="mb-6 rounded-2xl border border-zinc-800 bg-zinc-900 p-5">
@@ -932,7 +1015,7 @@ export default function App() {
                           onClick={() => setCheckoutStep('receipt')}
                           className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs font-semibold text-amber-400"
                         >
-                          Lihat Struk Terakhir ({activeReceipt.id})
+                          Lihat Struk Terakhir ({activeReceipt.orderCode || activeReceipt.id})
                         </button>
                       )}
                     </div>
@@ -1061,7 +1144,7 @@ export default function App() {
                   <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
                     <div className="flex justify-between">
                       <span className="text-zinc-500">ID Order</span>
-                      <span className="text-white">{activeReceipt.id}</span>
+                      <span className="text-white">{activeReceipt.orderCode || activeReceipt.id}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-zinc-500">Lokasi</span>
@@ -1144,7 +1227,7 @@ export default function App() {
               </div>
             )}
 
-           {checkoutStep === 'receipt' && (
+            {checkoutStep === 'receipt' && (
               <div className="flex gap-2 border-t border-zinc-800 bg-zinc-950/90 p-5">
                 {!isCustomerView ? (
                   <button

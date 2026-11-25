@@ -680,7 +680,7 @@ export default function App() {
                   <div className="border-t border-zinc-800 pt-3">
                     <div className="mb-3 flex items-center justify-between text-xs">
                       <span className="text-zinc-400">
-                        Bayar: <strong className="text-zinc-200">{ord.paymentMethod}</strong>
+                        Bayar: <strong className="text-zinc-200">{ord.paymentMethod || (ord.status === "Konfirmasi Kasir" ? "Kasir" : "QRIS")}</strong>
                       </span>
                       <span className="font-mono text-sm font-bold text-amber-400">
                         {formatIDR(ord.total)}

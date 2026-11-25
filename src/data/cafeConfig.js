@@ -1,5 +1,5 @@
 export const CAFE_CONFIG = {
-  name: "KALA ROASTERY & EATERY",
+  name: "TOKO ROTI IBU SAYA",
   tagline: "Scan, Pesan, Nikmati Tanpa Antre",
   address: "Jl. Margonda Raya No. 88, Depok",
   currency: "Rp",

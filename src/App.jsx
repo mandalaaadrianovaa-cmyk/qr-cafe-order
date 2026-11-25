@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { CAFE_CONFIG } from "./data/cafeConfig";
 import {
   Coffee,
   ShoppingBag,

@@ -19,7 +19,6 @@ import {
   ChefHat,
   Lock,
 } from 'lucide-react';
-import { CAFE_CONFIG } from './data/cafeConfig';
 import { supabase } from './supabaseClient';
 
 const STAFF_PIN = '1234'; // Bisa diganti sesuai kebutuhan kafe

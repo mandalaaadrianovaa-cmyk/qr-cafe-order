@@ -68,7 +68,7 @@ const mapDbRowToOrder = (row) => {
       ? `Meja ${row.table_number}`
       : 'Takeaway',
     customerName: row.customer_name || 'Tamu Kafe',
-    paymentMethod: row.payment_method || 'QRIS',
+    paymentMethod: row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir' : 'QRIS'),
     status: row.status || 'Menunggu Masak',
     items: rawItems,
     subtotal: computedSubtotal,

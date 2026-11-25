@@ -1123,7 +1123,7 @@ export default function App() {
                   </p>
                   <div className="my-5 rounded-2xl bg-white p-4 shadow-lg">
                     <img
-                      src="/qris-bank.jpg"
+                      src="public/qris-bank.jpg"
                       alt={`QRIS ${CAFE_CONFIG.qrisMerchantName}`}
                       className="h-44 w-44 object-contain"
                     />

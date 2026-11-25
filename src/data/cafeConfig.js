@@ -4,7 +4,7 @@ export const CAFE_CONFIG = {
   address: "Jl. Margonda Raya No. 88, Depok",
   currency: "Rp",
   taxPercentage: 10, // PPN 10% (isi 0 jika tanpa pajak)
-  qrisMerchantName: "KALA ROASTERY DEPOK",
+  qrisMerchantName: "TOKO ROTI IBU SAYA",
   nmid: "ID1020268899123",
   categories: ["Semua", "Signature Coffee", "Non-Coffee", "Makanan Berat", "Camilan"],
   menus: [

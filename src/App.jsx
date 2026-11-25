@@ -274,7 +274,10 @@ export default function App() {
       items: cart,
       total_price: grandTotal,
       status: initialStatus,
+      customer_name: trimmedName,
     };
+
+    console.log('[DEBUG ORDER]', { customerName, trimmedName, payload });
 
     const { data, error } = await supabase
       .from('orders')

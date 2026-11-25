@@ -68,7 +68,7 @@ const mapDbRowToOrder = (row) => {
       ? `Meja ${row.table_number}`
       : 'Takeaway',
     customerName: row.customer_name || 'Tamu Kafe',
-    paymentMethod: row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir' : 'QRIS'),
+    paymentMethod: row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir/Tunai' : 'QRIS'),
     status: row.status || 'Menunggu Masak',
     items: rawItems,
     subtotal: computedSubtotal,
@@ -1122,14 +1122,18 @@ export default function App() {
                     NMID: {CAFE_CONFIG.nmid}
                   </p>
                   <div className="my-5 rounded-2xl bg-white p-4 shadow-lg">
-                    <QRCodeSVG value={qrisPayload} size={180} />
+                    <img
+                      src="/qris-bank.jpg"
+                      alt={`QRIS ${CAFE_CONFIG.qrisMerchantName}`}
+                      className="h-44 w-44 object-contain"
+                    />
                   </div>
                   <p className="text-xs text-zinc-400">Total Tagihan</p>
                   <p className="mt-0.5 font-mono text-xl font-extrabold text-amber-400">
                     {formatIDR(grandTotal)}
                   </p>
                   <p className="mt-3 max-w-xs text-[11px] text-zinc-500">
-                    Simulasi QRIS: klik tombol konfirmasi di bawah setelah scan untuk mengirim pesanan ke dapur.
+                    Scan QR di atas, ketik nominal sesuai Total Tagihan, lalu konfirmasi ke kasir setelah pembayaran berhasil.
                   </p>
                 </div>
               )}

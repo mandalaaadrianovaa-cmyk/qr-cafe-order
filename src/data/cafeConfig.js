@@ -6,6 +6,8 @@ export const CAFE_CONFIG = {
   taxPercentage: 10, // PPN 10% (isi 0 jika tanpa pajak)
   qrisMerchantName: "TOKO ROTI IBU SAYA",
   nmid: "ID1020268899123",
+  staffPin: "1234",
+  ownerPin: "9999", // Ganti sesuai PIN owner
   categories: ["Semua", "Signature Coffee", "Non-Coffee", "Makanan Berat", "Camilan"],
   menus: [
     {

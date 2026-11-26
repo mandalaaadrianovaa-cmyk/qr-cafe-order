@@ -222,6 +222,17 @@ export default function App() {
     return menu.price + addonsTotal;
   };
 
+  const [nameError, setNameError] = useState('');
+
+const validateCustomerName = () => {
+  if (!customerName.trim()) {
+    setNameError('Nama pemesan wajib diisi dulu sebelum melanjutkan pesanan.');
+    return false;
+  }
+  setNameError('');
+  return true;
+};
+
   const handleAddToCart = () => {
     if (!activeItem) return;
     const unitPrice = calculateUnitPrice(activeItem, selectedAddons);
@@ -246,6 +257,34 @@ export default function App() {
     setCheckoutStep('cart');
     setIsCartOpen(true);
   };
+
+  const handleScannedOrderCode = async (rawCode) => {
+  const cleanCode = String(rawCode || '').trim().toUpperCase();
+  if (!cleanCode) return;
+
+  const targetOrder = orders.find(
+    (o) => String(o.orderCode || '').toUpperCase() === cleanCode
+  );
+
+  if (!targetOrder) {
+    setScanFeedback({ type: 'error', text: `Kode ${cleanCode} tidak ditemukan.` });
+    return;
+  }
+
+  if (targetOrder.status !== 'Konfirmasi Kasir') {
+    setScanFeedback({
+      type: 'info',
+      text: `Order ${cleanCode} sudah berstatus "${targetOrder.status}".`,
+    });
+    return;
+  }
+
+  await updateOrderStatus(targetOrder.id, 'Menunggu Masak');
+  setScanFeedback({
+    type: 'success',
+    text: `Order ${cleanCode} terkonfirmasi & masuk ke antrean masak!`,
+  });
+};
 
   const updateCartQty = (cartId, delta) => {
     setCart((prev) =>
@@ -309,6 +348,7 @@ export default function App() {
 
   const handleCheckoutButton = () => {
     if (cart.length === 0) return;
+    if (!validateCustomerName()) return;
     if (paymentMethod === 'QRIS') {
       setCheckoutStep('qris');
     } else {
@@ -359,6 +399,42 @@ export default function App() {
       return;
     }
     setTableNumber(customTableInput.trim().padStart(2, '0'));
+  };
+
+  const activeOrders = useMemo(
+    () => orders.filter((o) => o.status !== 'Clear'),
+    [orders]
+  );
+
+  const clearedOrders = useMemo(
+    () => orders.filter((o) => o.status === 'Clear'),
+    [orders]
+  );
+
+  const exportClearedToCsv = () => {
+    const headers = ['Order Code', 'Waktu', 'Meja/Tipe', 'Pemesan', 'Metode', 'Total', 'Status'];
+    const rows = clearedOrders.map((o) => [
+      o.orderCode,
+      o.createdAt,
+      o.table,
+      o.customerName,
+      o.paymentMethod,
+      o.total,
+      o.status,
+    ]);
+    const csvContent =
+      '\uFEFF' +
+      [headers, ...rows]
+        .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+        .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rekap-clear-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const qrisPayload = useMemo(() => {
@@ -1167,6 +1243,20 @@ export default function App() {
                         <Clock className="h-3 w-3" />
                         {activeReceipt.status}
                       </span>
+
+                      {activeReceipt.paymentMethod === 'KASIR' && activeReceipt.status === 'Konfirmasi Kasir' && (
+                        <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
+                          <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
+                            Tunjukkan QR Ini ke Kasir
+                          </span>
+                          <div className="rounded-lg bg-white p-2">
+                            <QRCodeSVG value={activeReceipt.orderCode} size={120} />
+                          </div>
+                          <span className="mt-2 font-mono text-xs font-bold text-white">
+                            {activeReceipt.orderCode}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
 

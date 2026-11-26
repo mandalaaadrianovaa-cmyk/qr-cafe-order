@@ -19,10 +19,14 @@ import {
   Sparkles,
   ChefHat,
   Lock,
+  History,
+  Download,
+  CheckCheck,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
-const STAFF_PIN = '1234'; // Bisa diganti sesuai kebutuhan kafe
+const STAFF_PIN = CAFE_CONFIG.staffPin || '1234';
+const OWNER_PIN = CAFE_CONFIG.ownerPin || '9999';
 
 const formatIDR = (amount) => {
   return `${CAFE_CONFIG.currency} ${Number(amount || 0).toLocaleString('id-ID')}`;
@@ -42,6 +46,7 @@ const getInitialTabFromHash = () => {
   const hash = window.location.hash.toLowerCase();
   if (hash === '#dapur' || hash === '#kitchen') return 'kitchen';
   if (hash === '#qr' || hash === '#qr-meja') return 'qr';
+  if (hash === '#riwayat' || hash === '#owner') return 'riwayat';
   return 'menu';
 };
 
@@ -54,6 +59,16 @@ const mapDbRowToOrder = (row) => {
   const total = Number(row.total_price ?? computedSubtotal);
   const taxAmount = Math.max(0, total - computedSubtotal);
 
+  const rawPayment = String(row.payment_method || '').toUpperCase();
+  const paymentMethod =
+    rawPayment === 'KASIR' || rawPayment === 'KASIR/TUNAI'
+      ? 'Kasir/Tunai'
+      : rawPayment === 'QRIS'
+      ? 'QRIS'
+      : row.status === 'Konfirmasi Kasir'
+      ? 'Kasir/Tunai'
+      : 'QRIS';
+
   return {
     id: row.id,
     orderCode: row.order_code || row.id,
@@ -63,14 +78,16 @@ const mapDbRowToOrder = (row) => {
           minute: '2-digit',
         })
       : '',
+    createdDate: row.created_at
+      ? new Date(row.created_at).toLocaleDateString('id-ID')
+      : '',
     table: row.is_takeaway
       ? 'Takeaway'
       : row.table_number
       ? `Meja ${row.table_number}`
       : 'Takeaway',
     customerName: row.customer_name || 'Tamu Kafe',
-    paymentMethod:
-      row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir/Tunai' : 'QRIS'),
+    paymentMethod,
     status: row.status || 'Menunggu Masak',
     items: rawItems,
     subtotal: computedSubtotal,
@@ -80,9 +97,16 @@ const mapDbRowToOrder = (row) => {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(() => getInitialTabFromHash()); // 'menu' | 'kitchen' | 'qr'
-  const [isStaffUnlocked, setIsStaffUnlocked] = useState(() => getInitialTabFromHash() !== 'menu');
-  const [pendingStaffTab, setPendingStaffTab] = useState(null);
+  const initialTab = getInitialTabFromHash();
+  const [activeTab, setActiveTab] = useState(() => initialTab); // 'menu' | 'kitchen' | 'qr' | 'riwayat'
+  const [isStaffUnlocked, setIsStaffUnlocked] = useState(
+    () => initialTab === 'kitchen' || initialTab === 'qr'
+  );
+  const [isOwnerUnlocked, setIsOwnerUnlocked] = useState(() => initialTab === 'riwayat');
+
+  // 'staff' | 'owner' | null
+  const [pinModalRole, setPinModalRole] = useState(null);
+  const [pendingTab, setPendingTab] = useState(null);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState('');
 
@@ -169,6 +193,7 @@ export default function App() {
       setActiveTab(nextTab);
       if (nextTab === 'menu') {
         setIsStaffUnlocked(false);
+        setIsOwnerUnlocked(false);
       }
     };
     window.addEventListener('hashchange', handleHashChange);
@@ -192,23 +217,50 @@ export default function App() {
       window.location.hash = targetTab === 'kitchen' ? 'dapur' : 'qr-meja';
       return;
     }
-    setPendingStaffTab(targetTab);
+    setPendingTab(targetTab);
+    setPinModalRole('staff');
+    setPinInput('');
+    setPinError('');
+  };
+
+  const requestOwnerTab = () => {
+    setIsScannerOpen(false);
+    if (isOwnerUnlocked) {
+      setActiveTab('riwayat');
+      window.location.hash = 'riwayat';
+      return;
+    }
+    setPendingTab('riwayat');
+    setPinModalRole('owner');
     setPinInput('');
     setPinError('');
   };
 
   const handlePinSubmit = (e) => {
     e.preventDefault();
-    if (pinInput.trim() === STAFF_PIN) {
-      setIsStaffUnlocked(true);
-      const target = pendingStaffTab || 'kitchen';
-      setActiveTab(target);
-      window.location.hash = target === 'kitchen' ? 'dapur' : 'qr-meja';
-      setPendingStaffTab(null);
+    const expectedPin = pinModalRole === 'owner' ? OWNER_PIN : STAFF_PIN;
+
+    if (pinInput.trim() === expectedPin) {
+      const target = pendingTab || (pinModalRole === 'owner' ? 'riwayat' : 'kitchen');
+      if (pinModalRole === 'owner') {
+        setIsOwnerUnlocked(true);
+        setActiveTab('riwayat');
+        window.location.hash = 'riwayat';
+      } else {
+        setIsStaffUnlocked(true);
+        setActiveTab(target);
+        window.location.hash = target === 'kitchen' ? 'dapur' : 'qr-meja';
+      }
+      setPinModalRole(null);
+      setPendingTab(null);
       setPinInput('');
       setPinError('');
     } else {
-      setPinError('PIN staf salah. Coba lagi.');
+      setPinError(
+        pinModalRole === 'owner'
+          ? 'PIN owner salah. Coba lagi.'
+          : 'PIN staf salah. Coba lagi.'
+      );
     }
   };
 
@@ -301,6 +353,7 @@ export default function App() {
       total_price: grandTotal,
       status: initialStatus,
       customer_name: trimmedName,
+      payment_method: paymentMethod,
     };
 
     const { data, error } = await supabase
@@ -318,7 +371,7 @@ export default function App() {
     const mappedOrder = {
       ...mapDbRowToOrder(data),
       customerName: trimmedName,
-      paymentMethod,
+      paymentMethod: paymentMethod === 'KASIR' ? 'Kasir/Tunai' : 'QRIS',
       subtotal,
       taxAmount,
       total: grandTotal,
@@ -432,20 +485,22 @@ export default function App() {
     };
   }, [isScannerOpen, activeTab, handleScannedOrderCode]);
 
-  const clearOrders = async () => {
-    const { error } = await supabase
-      .from('orders')
-      .delete()
-      .neq('id', '00000000-0000-0000-0000-000000000000');
+  // Hapus riwayat (khusus pesanan berstatus Clear, opsi sementara untuk testing/bersih-bersih)
+  const deleteClearedOrders = async () => {
+    const confirmed = window.confirm(
+      'Hapus semua data riwayat (status Clear) dari database? Aksi ini tidak bisa dibatalkan.'
+    );
+    if (!confirmed) return;
+
+    const { error } = await supabase.from('orders').delete().eq('status', 'Clear');
 
     if (error) {
-      console.error('Gagal membersihkan riwayat pesanan:', error);
-      alert('Gagal membersihkan riwayat pesanan.');
+      console.error('Gagal menghapus riwayat pesanan:', error);
+      alert('Gagal menghapus riwayat pesanan.');
       return;
     }
 
-    setOrders([]);
-    setActiveReceipt(null);
+    setOrders((prev) => prev.filter((o) => o.status !== 'Clear'));
   };
 
   const applyManualTable = (e) => {
@@ -467,17 +522,40 @@ export default function App() {
     [orders]
   );
 
+  const clearedRevenue = useMemo(
+    () => clearedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
+    [clearedOrders]
+  );
+
   const exportClearedToCsv = () => {
-    const headers = ['Order Code', 'Waktu', 'Meja/Tipe', 'Pemesan', 'Metode', 'Total', 'Status'];
-    const rows = clearedOrders.map((o) => [
-      o.orderCode,
-      o.createdAt,
-      o.table,
-      o.customerName,
-      o.paymentMethod,
-      o.total,
-      o.status,
-    ]);
+    const headers = [
+      'Order Code',
+      'Tanggal',
+      'Waktu',
+      'Meja/Tipe',
+      'Pemesan',
+      'Metode Pembayaran',
+      'Item',
+      'Total',
+      'Status',
+    ];
+    const rows = clearedOrders.map((o) => {
+      const itemSummary = Array.isArray(o.items)
+        ? o.items.map((it) => `${it.qty}x ${it.name}`).join(' | ')
+        : '';
+      return [
+        o.orderCode,
+        o.createdDate,
+        o.createdAt,
+        o.table,
+        o.customerName,
+        o.paymentMethod,
+        itemSummary,
+        o.total,
+        o.status,
+      ];
+    });
+
     const csvContent =
       '\uFEFF' +
       [headers, ...rows]
@@ -488,12 +566,12 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `rekap-clear-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `riwayat-order-clear-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const isCustomerView = activeTab === 'menu' && !isStaffUnlocked;
+  const isCustomerView = activeTab === 'menu' && !isStaffUnlocked && !isOwnerUnlocked;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 selection:bg-amber-500/30 selection:text-amber-200">
@@ -520,9 +598,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigasi: Hanya muncul penuh saat mode staf aktif */}
+          {/* Navigasi: Hanya muncul penuh saat mode staf / owner aktif */}
           {!isCustomerView && (
-            <div className="flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 p-1">
+            <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/90 p-1">
               <button
                 onClick={switchToMenu}
                 className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
@@ -544,7 +622,7 @@ export default function App() {
               >
                 <ChefHat className="h-3.5 w-3.5" />
                 Dapur
-                {orders.length > 0 && (
+                {activeOrders.length > 0 && (
                   <span
                     className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
                       activeTab === 'kitchen'
@@ -552,7 +630,7 @@ export default function App() {
                         : 'bg-amber-500/20 text-amber-400'
                     }`}
                   >
-                    {orders.length}
+                    {activeOrders.length}
                   </span>
                 )}
               </button>
@@ -566,6 +644,28 @@ export default function App() {
               >
                 <QrCode className="h-3.5 w-3.5" />
                 QR Meja
+              </button>
+              <button
+                onClick={requestOwnerTab}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                  activeTab === 'riwayat'
+                    ? 'bg-amber-500 text-zinc-950 shadow-sm'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <History className="h-3.5 w-3.5" />
+                Riwayat
+                {clearedOrders.length > 0 && (
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                      activeTab === 'riwayat'
+                        ? 'bg-zinc-950 text-amber-400'
+                        : 'bg-emerald-500/20 text-emerald-300'
+                    }`}
+                  >
+                    {clearedOrders.length}
+                  </span>
+                )}
               </button>
             </div>
           )}
@@ -732,7 +832,7 @@ export default function App() {
             <div>
               <h2 className="text-xl font-bold text-white">Layar Antrean Dapur & Kasir</h2>
               <p className="text-xs text-zinc-400">
-                Pesanan dari halaman Menu otomatis masuk ke sini. Ubah status untuk memantau progres.
+                Pesanan aktif tampil di sini. Tandai <span className="text-emerald-400 font-semibold">Clear</span> bila pesanan sudah diserahkan agar masuk ke Riwayat Owner.
               </p>
             </div>
 
@@ -771,16 +871,6 @@ export default function App() {
                   Cari Kode
                 </button>
               </form>
-
-              {orders.length > 0 && (
-                <button
-                  onClick={clearOrders}
-                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Bersihkan Riwayat
-                </button>
-              )}
             </div>
           </div>
 
@@ -816,17 +906,17 @@ export default function App() {
             </div>
           )}
 
-          {orders.length === 0 ? (
+          {activeOrders.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/40 p-12 text-center">
               <ChefHat className="mx-auto mb-3 h-10 w-10 text-zinc-600" />
-              <p className="text-sm font-semibold text-zinc-300">Belum ada pesanan masuk</p>
+              <p className="text-sm font-semibold text-zinc-300">Belum ada pesanan aktif</p>
               <p className="mt-1 text-xs text-zinc-500">
-                Buka tab <span className="text-amber-400">Menu</span>, masukkan item ke keranjang, lalu lakukan checkout untuk mencoba.
+                Buka tab <span className="text-amber-400">Menu</span> untuk membuat pesanan baru, atau cek tab <span className="text-emerald-400">Riwayat</span> untuk order yang sudah Clear.
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {orders.map((ord) => {
+              {activeOrders.map((ord) => {
                 const isPendingPayment = ord.status === 'Konfirmasi Kasir';
 
                 return (
@@ -897,7 +987,7 @@ export default function App() {
                         <span className="text-zinc-400">
                           Bayar:{' '}
                           <strong className="text-zinc-200">
-                            {ord.paymentMethod || (isPendingPayment ? 'Kasir' : 'QRIS')}
+                            {ord.paymentMethod || (isPendingPayment ? 'Kasir/Tunai' : 'QRIS')}
                           </strong>
                         </span>
                         <span className="font-mono text-sm font-bold text-amber-400">
@@ -914,28 +1004,41 @@ export default function App() {
                           Konfirmasi Pembayaran
                         </button>
                       ) : (
-                        <div className="grid grid-cols-3 gap-1.5">
-                          {['Menunggu Masak', 'Sedang Disiapkan', 'Siap'].map((st) => {
-                            const isCurrent = ord.status === st;
-                            return (
-                              <button
-                                key={st}
-                                type="button"
-                                onClick={() => updateOrderStatus(ord.id, st)}
-                                className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
-                                  isCurrent
-                                    ? 'bg-amber-500 text-zinc-950'
-                                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                                }`}
-                              >
-                                {st === 'Menunggu Masak'
-                                  ? 'Antre'
-                                  : st === 'Sedang Disiapkan'
-                                  ? 'Proses'
-                                  : 'Siap'}
-                              </button>
-                            );
-                          })}
+                        <div className="space-y-1.5">
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {['Menunggu Masak', 'Sedang Disiapkan', 'Siap'].map((st) => {
+                              const isCurrent = ord.status === st;
+                              return (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  onClick={() => updateOrderStatus(ord.id, st)}
+                                  className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                                    isCurrent
+                                      ? 'bg-amber-500 text-zinc-950'
+                                      : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                                  }`}
+                                >
+                                  {st === 'Menunggu Masak'
+                                    ? 'Antre'
+                                    : st === 'Sedang Disiapkan'
+                                    ? 'Proses'
+                                    : 'Siap'}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {ord.status === 'Siap' && (
+                            <button
+                              type="button"
+                              onClick={() => updateOrderStatus(ord.id, 'Clear')}
+                              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-bold text-emerald-300 transition hover:bg-emerald-500 hover:text-zinc-950"
+                            >
+                              <CheckCheck className="h-3.5 w-3.5" />
+                              Selesai & Pindahkan ke Riwayat (Clear)
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1017,8 +1120,121 @@ export default function App() {
         </main>
       )}
 
-      {/* MODAL PIN STAF (DAPUR & QR MEJA) */}
-      {pendingStaffTab && (
+      {/* TAB 4: RIWAYAT OWNER (CLEAR ORDERS + CSV EXPORT + HAPUS SEMENTARA) */}
+      {activeTab === 'riwayat' && (
+        <main className="mx-auto max-w-6xl px-4 py-6">
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 font-mono text-[11px] font-semibold text-emerald-300">
+                OWNER PANEL • STATUS CLEAR
+              </div>
+              <h2 className="mt-1.5 text-xl font-bold text-white">Riwayat Pesanan Selesai (Clear)</h2>
+              <p className="text-xs text-zinc-400">
+                Menampilkan pesanan berstatus <strong className="text-zinc-200">Clear</strong> yang terpisah dari antrean dapur aktif.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={exportClearedToCsv}
+                disabled={clearedOrders.length === 0}
+                className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export CSV
+              </button>
+
+              {clearedOrders.length > 0 && (
+                <button
+                  type="button"
+                  onClick={deleteClearedOrders}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Hapus Riwayat (Sementara)
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Ringkasan */}
+          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+              <span className="font-mono text-[11px] uppercase text-zinc-400">
+                Total Order Clear
+              </span>
+              <p className="mt-1 font-mono text-2xl font-extrabold text-white">
+                {clearedOrders.length}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
+              <span className="font-mono text-[11px] uppercase text-zinc-400">
+                Total Omzet Tercatat (Clear)
+              </span>
+              <p className="mt-1 font-mono text-2xl font-extrabold text-emerald-400">
+                {formatIDR(clearedRevenue)}
+              </p>
+            </div>
+          </div>
+
+          {clearedOrders.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/40 p-12 text-center">
+              <History className="mx-auto mb-3 h-10 w-10 text-zinc-600" />
+              <p className="text-sm font-semibold text-zinc-300">Belum ada pesanan berstatus Clear</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Set pesanan di tab <span className="text-amber-400">Dapur</span> ke <span className="text-zinc-200">Siap</span> lalu klik <span className="text-emerald-400">Selesai & Pindahkan ke Riwayat (Clear)</span>.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-zinc-800 bg-zinc-950/80 font-mono text-[11px] uppercase text-zinc-400">
+                  <tr>
+                    <th className="px-4 py-3">Kode</th>
+                    <th className="px-4 py-3">Waktu</th>
+                    <th className="px-4 py-3">Lokasi & Pemesan</th>
+                    <th className="px-4 py-3">Item</th>
+                    <th className="px-4 py-3">Pembayaran</th>
+                    <th className="px-4 py-3 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/80">
+                  {clearedOrders.map((ord) => (
+                    <tr key={ord.id} className="hover:bg-zinc-950/40">
+                      <td className="px-4 py-3 font-mono font-bold text-amber-400">
+                        {ord.orderCode || ord.id}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-zinc-400">
+                        {ord.createdDate ? `${ord.createdDate} • ` : ''}
+                        {ord.createdAt}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="font-semibold text-white">{ord.table}</span>
+                        <span className="text-zinc-400"> • {ord.customerName}</span>
+                      </td>
+                      <td className="px-4 py-3 text-zinc-300">
+                        {ord.items.map((it) => `${it.qty}x ${it.name}`).join(', ')}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300">
+                          {ord.paymentMethod}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3 text-right font-mono font-bold text-emerald-400">
+                        {formatIDR(ord.total)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </main>
+      )}
+
+      {/* MODAL PIN STAF / OWNER */}
+      {pinModalRole && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
           <form
             onSubmit={handlePinSubmit}
@@ -1027,19 +1243,27 @@ export default function App() {
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2 text-amber-400">
                 <Lock className="h-4 w-4" />
-                <h3 className="text-sm font-bold text-white">Akses Kasir / Dapur</h3>
+                <h3 className="text-sm font-bold text-white">
+                  {pinModalRole === 'owner' ? 'Akses Owner (Riwayat)' : 'Akses Kasir / Dapur'}
+                </h3>
               </div>
               <button
                 type="button"
-                onClick={() => setPendingStaffTab(null)}
+                onClick={() => {
+                  setPinModalRole(null);
+                  setPendingTab(null);
+                }}
                 className="rounded-lg border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
             <p className="mb-3 text-xs text-zinc-400">
-              Masukkan PIN staf (default demo:{' '}
-              <span className="font-mono text-amber-400">1234</span>).
+              Masukkan PIN {pinModalRole === 'owner' ? 'owner' : 'staf'} (default demo:{' '}
+              <span className="font-mono text-amber-400">
+                {pinModalRole === 'owner' ? OWNER_PIN : STAFF_PIN}
+              </span>
+              ).
             </p>
             <input
               type="password"
@@ -1054,7 +1278,7 @@ export default function App() {
               type="submit"
               className="mt-4 w-full rounded-xl bg-amber-500 py-2.5 text-xs font-bold text-zinc-950 transition hover:bg-amber-400"
             >
-              Masuk Panel Staf
+              {pinModalRole === 'owner' ? 'Buka Riwayat Owner' : 'Masuk Panel Staf'}
             </button>
           </form>
         </div>
@@ -1403,7 +1627,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  {activeReceipt.paymentMethod === 'KASIR' &&
+                  {activeReceipt.paymentMethod === 'Kasir/Tunai' &&
                     activeReceipt.status === 'Konfirmasi Kasir' && (
                       <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
                         <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">

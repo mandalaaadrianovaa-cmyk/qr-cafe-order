@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { CAFE_CONFIG } from "./data/cafeConfig";
+import { Html5Qrcode } from 'html5-qrcode';
 import {
   Coffee,
   ShoppingBag,
@@ -21,7 +22,53 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
+const [scanFeedback, setScanFeedback] = useState(null);
+
 const STAFF_PIN = '1234'; // Bisa diganti sesuai kebutuhan kafe
+
+const [isScannerOpen, setIsScannerOpen] = useState(false);
+const [manualCodeInput, setManualCodeInput] = useState('');
+const ordersRef = React.useRef(orders);
+
+useEffect(() => {
+  ordersRef.current = orders;
+}, [orders]);
+
+useEffect(() => {
+  if (!isScannerOpen || activeTab !== 'kitchen') return;
+
+  const html5QrCode = new Html5Qrcode('qr-reader');
+  let isMounted = true;
+
+  html5QrCode
+    .start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 220, height: 220 } },
+      async (decodedText) => {
+        if (!isMounted) return;
+        await handleScannedOrderCode(decodedText);
+        setIsScannerOpen(false);
+      },
+      () => {}
+    )
+    .catch((err) => {
+      console.error('Gagal menyalakan kamera:', err);
+      if (isMounted) {
+        setScanFeedback({
+          type: 'error',
+          text: 'Kamera gagal dibuka. Cek izin kamera atau gunakan input kode manual.',
+        });
+      }
+    });
+
+  return () => {
+    isMounted = false;
+    html5QrCode
+      .stop()
+      .then(() => html5QrCode.clear())
+      .catch(() => {});
+  };
+}, [isScannerOpen, activeTab]);
 
 const formatIDR = (amount) => {
   return `${CAFE_CONFIG.currency} ${Number(amount || 0).toLocaleString('id-ID')}`;
@@ -685,6 +732,43 @@ const validateCustomerName = () => {
                 Pesanan dari halaman Menu otomatis masuk ke sini. Ubah status untuk memantau progres.
               </p>
             </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+    <button
+      type="button"
+      onClick={() => {
+        setScanFeedback(null);
+        setIsScannerOpen((prev) => !prev);
+      }}
+      className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400"
+    >
+      <QrCode className="h-3.5 w-3.5" />
+      {isScannerOpen ? 'Tutup Kamera' : 'Scan QR Kasir'}
+    </button>
+
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleScannedOrderCode(manualCodeInput);
+        setManualCodeInput('');
+      }}
+      className="flex items-center gap-1.5"
+    >
+      <input
+        type="text"
+        value={manualCodeInput}
+        onChange={(e) => setManualCodeInput(e.target.value)}
+        placeholder="ORD-XXXXXX"
+        className="w-28 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-amber-500 focus:outline-none"
+      />
+      <button
+        type="submit"
+        className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-amber-500 hover:text-amber-400"
+      >
+        Konfirmasi
+      </button>
+    </form>
+
             {orders.length > 0 && (
               <button
                 onClick={clearOrders}
@@ -695,6 +779,40 @@ const validateCustomerName = () => {
               </button>
             )}
           </div>
+        </div>
+
+        {scanFeedback && (
+  <div
+    className={`mb-4 rounded-xl border px-4 py-3 text-xs font-semibold ${
+      scanFeedback.type === 'success'
+        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+        : scanFeedback.type === 'info'
+        ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+        : 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+    }`}
+  >
+    {scanFeedback.text}
+  </div>
+)}
+
+  {isScannerOpen && (
+    <div className="mb-6 rounded-2xl border border-amber-500/40 bg-zinc-900 p-4">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-xs font-bold uppercase text-amber-400">
+          Arahkan Kamera ke QR Code Pelanggan
+        </span>
+        <button
+          type="button"
+          onClick={() => setIsScannerOpen(false)}
+          className="rounded-lg border border-zinc-700 p-1 text-zinc-400 hover:text-white"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div id="qr-reader" className="mx-auto max-w-sm overflow-hidden rounded-xl bg-zinc-950" />
+    </div>
+  )}
+  ```[cite: 1, 6]  
 
           {orders.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/40 p-12 text-center">
@@ -1159,10 +1277,14 @@ const validateCustomerName = () => {
                           <input
                             type="text"
                             value={customerName}
-                            onChange={(e) => setCustomerName(e.target.value)}
+                            onChange={(e) => {
+                              setCustomerName(e.target.value);
+                              if (nameError) setNameError('');
+                            }}
                             placeholder="Masukkan nama panggilan..."
                             className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3.5 py-2 text-xs text-white placeholder:text-zinc-600 focus:border-amber-500 focus:outline-none"
                           />
+                          {nameError && <p className="mt-1.5 text-xs text-rose-400">{nameError}</p>}
                         </div>
 
                         <div>
@@ -1223,42 +1345,42 @@ const validateCustomerName = () => {
                     <CheckCircle2 className="h-5 w-5" />
                     <span className="text-sm font-bold">Pesanan Berhasil Dibuat!</span>
                   </div>
-
-                  <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">ID Order</span>
-                      <span className="text-white">{activeReceipt.orderCode || activeReceipt.id}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Lokasi</span>
-                      <span className="text-amber-400">{activeReceipt.table}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Pemesan</span>
-                      <span className="text-zinc-200">{activeReceipt.customerName}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-zinc-500">Status Dapur</span>
-                      <span className="inline-flex items-center gap-1 text-amber-400">
-                        <Clock className="h-3 w-3" />
-                        {activeReceipt.status}
-                      </span>
-
-                      {activeReceipt.paymentMethod === 'KASIR' && activeReceipt.status === 'Konfirmasi Kasir' && (
-                        <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
-                          <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
-                            Tunjukkan QR Ini ke Kasir
-                          </span>
-                          <div className="rounded-lg bg-white p-2">
-                            <QRCodeSVG value={activeReceipt.orderCode} size={120} />
-                          </div>
-                          <span className="mt-2 font-mono text-xs font-bold text-white">
-                            {activeReceipt.orderCode}
-                          </span>
-                        </div>
-                      )}
-                    </div>
+                  
+                <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
+                   <div className="flex justify-between gap-2">
+                    <span className="text-zinc-500">ID Order</span>
+                    <span className="text-white">{activeReceipt.orderCode || activeReceipt.id}</span>
                   </div>
+                <div className="flex justify-between gap-2">
+                    <span className="text-zinc-500">Lokasi</span>
+                    <span className="text-amber-400">{activeReceipt.table}</span>                          
+                  </div>
+                <div className="flex justify-between gap-2">
+                    <span className="text-zinc-500">Pemesan</span>
+                    <span className="text-zinc-200">{activeReceipt.customerName}</span>
+                  </div>
+                <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500">Status Dapur</span>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-amber-400">
+                          <Clock className="h-3 w-3" />
+                              {activeReceipt.status}
+                    </span>
+                  </div>
+                </div>
+                    
+              {activeReceipt.paymentMethod === 'KASIR' && activeReceipt.status === 'Konfirmasi Kasir' && (
+                <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
+                  <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
+                        Tunjukkan QR Ini ke Kasir
+                  </span>
+                <div className="rounded-lg bg-white p-2">
+                  <QRCodeSVG value={activeReceipt.orderCode || activeReceipt.id} size={120} />
+                </div>
+                  <span className="mt-2 font-mono text-xs font-bold text-white">
+                    {activeReceipt.orderCode || activeReceipt.id}
+                  </span>
+                </div>
+              )}
 
                   <div className="space-y-2 text-xs">
                     {activeReceipt.items.map((it) => (

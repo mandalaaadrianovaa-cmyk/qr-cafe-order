@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { CAFE_CONFIG } from "./data/cafeConfig";
+import { CAFE_CONFIG } from './data/cafeConfig';
 import { Html5Qrcode } from 'html5-qrcode';
 import {
   Coffee,
@@ -22,53 +22,7 @@ import {
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
-const [scanFeedback, setScanFeedback] = useState(null);
-
 const STAFF_PIN = '1234'; // Bisa diganti sesuai kebutuhan kafe
-
-const [isScannerOpen, setIsScannerOpen] = useState(false);
-const [manualCodeInput, setManualCodeInput] = useState('');
-const ordersRef = React.useRef(orders);
-
-useEffect(() => {
-  ordersRef.current = orders;
-}, [orders]);
-
-useEffect(() => {
-  if (!isScannerOpen || activeTab !== 'kitchen') return;
-
-  const html5QrCode = new Html5Qrcode('qr-reader');
-  let isMounted = true;
-
-  html5QrCode
-    .start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 220, height: 220 } },
-      async (decodedText) => {
-        if (!isMounted) return;
-        await handleScannedOrderCode(decodedText);
-        setIsScannerOpen(false);
-      },
-      () => {}
-    )
-    .catch((err) => {
-      console.error('Gagal menyalakan kamera:', err);
-      if (isMounted) {
-        setScanFeedback({
-          type: 'error',
-          text: 'Kamera gagal dibuka. Cek izin kamera atau gunakan input kode manual.',
-        });
-      }
-    });
-
-  return () => {
-    isMounted = false;
-    html5QrCode
-      .stop()
-      .then(() => html5QrCode.clear())
-      .catch(() => {});
-  };
-}, [isScannerOpen, activeTab]);
 
 const formatIDR = (amount) => {
   return `${CAFE_CONFIG.currency} ${Number(amount || 0).toLocaleString('id-ID')}`;
@@ -115,7 +69,8 @@ const mapDbRowToOrder = (row) => {
       ? `Meja ${row.table_number}`
       : 'Takeaway',
     customerName: row.customer_name || 'Tamu Kafe',
-    paymentMethod: row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir/Tunai' : 'QRIS'),
+    paymentMethod:
+      row.payment_method || (row.status === 'Konfirmasi Kasir' ? 'Kasir/Tunai' : 'QRIS'),
     status: row.status || 'Menunggu Masak',
     items: rawItems,
     subtotal: computedSubtotal,
@@ -147,12 +102,19 @@ export default function App() {
   const [cart, setCart] = useState([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [customerName, setCustomerName] = useState('');
+  const [nameError, setNameError] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('QRIS'); // 'QRIS' | 'KASIR'
   const [checkoutStep, setCheckoutStep] = useState('cart'); // 'cart' | 'qris' | 'receipt'
   const [activeReceipt, setActiveReceipt] = useState(null);
 
   // State Pesanan (Sinkron via Supabase)
   const [orders, setOrders] = useState([]);
+  const ordersRef = useRef(orders);
+
+  // State Scanner QR Kasir
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [manualCodeInput, setManualCodeInput] = useState('');
+  const [scanFeedback, setScanFeedback] = useState(null);
 
   // State QR Generator
   const [totalTables, setTotalTables] = useState(10);
@@ -161,6 +123,10 @@ export default function App() {
       ? `${window.location.origin}${window.location.pathname}`
       : 'https://kafeanda.com'
   );
+
+  useEffect(() => {
+    ordersRef.current = orders;
+  }, [orders]);
 
   const fetchOrders = useCallback(async () => {
     const { data, error } = await supabase
@@ -210,6 +176,7 @@ export default function App() {
   }, []);
 
   const switchToMenu = () => {
+    setIsScannerOpen(false);
     setActiveTab('menu');
     if (window.location.hash) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
@@ -217,6 +184,9 @@ export default function App() {
   };
 
   const requestStaffTab = (targetTab) => {
+    if (targetTab !== 'kitchen') {
+      setIsScannerOpen(false);
+    }
     if (isStaffUnlocked) {
       setActiveTab(targetTab);
       window.location.hash = targetTab === 'kitchen' ? 'dapur' : 'qr-meja';
@@ -269,16 +239,14 @@ export default function App() {
     return menu.price + addonsTotal;
   };
 
-  const [nameError, setNameError] = useState('');
-
-const validateCustomerName = () => {
-  if (!customerName.trim()) {
-    setNameError('Nama pemesan wajib diisi dulu sebelum melanjutkan pesanan.');
-    return false;
-  }
-  setNameError('');
-  return true;
-};
+  const validateCustomerName = () => {
+    if (!customerName.trim()) {
+      setNameError('Nama pemesan wajib diisi dulu sebelum melanjutkan pesanan.');
+      return false;
+    }
+    setNameError('');
+    return true;
+  };
 
   const handleAddToCart = () => {
     if (!activeItem) return;
@@ -304,34 +272,6 @@ const validateCustomerName = () => {
     setCheckoutStep('cart');
     setIsCartOpen(true);
   };
-
-  const handleScannedOrderCode = async (rawCode) => {
-  const cleanCode = String(rawCode || '').trim().toUpperCase();
-  if (!cleanCode) return;
-
-  const targetOrder = orders.find(
-    (o) => String(o.orderCode || '').toUpperCase() === cleanCode
-  );
-
-  if (!targetOrder) {
-    setScanFeedback({ type: 'error', text: `Kode ${cleanCode} tidak ditemukan.` });
-    return;
-  }
-
-  if (targetOrder.status !== 'Konfirmasi Kasir') {
-    setScanFeedback({
-      type: 'info',
-      text: `Order ${cleanCode} sudah berstatus "${targetOrder.status}".`,
-    });
-    return;
-  }
-
-  await updateOrderStatus(targetOrder.id, 'Menunggu Masak');
-  setScanFeedback({
-    type: 'success',
-    text: `Order ${cleanCode} terkonfirmasi & masuk ke antrean masak!`,
-  });
-};
 
   const updateCartQty = (cartId, delta) => {
     setCart((prev) =>
@@ -363,8 +303,6 @@ const validateCustomerName = () => {
       customer_name: trimmedName,
     };
 
-    console.log('[DEBUG ORDER]', { customerName, trimmedName, payload });
-
     const { data, error } = await supabase
       .from('orders')
       .insert([payload])
@@ -390,6 +328,7 @@ const validateCustomerName = () => {
     setActiveReceipt(mappedOrder);
     setCart([]);
     setCustomerName('');
+    setNameError('');
     setCheckoutStep('receipt');
   };
 
@@ -403,25 +342,95 @@ const validateCustomerName = () => {
     }
   };
 
-  const updateOrderStatus = async (orderId, nextStatus) => {
-    const { error } = await supabase
-      .from('orders')
-      .update({ status: nextStatus })
-      .eq('id', orderId);
+  const updateOrderStatus = useCallback(
+    async (orderId, nextStatus) => {
+      const { error } = await supabase
+        .from('orders')
+        .update({ status: nextStatus })
+        .eq('id', orderId);
 
-    if (error) {
-      console.error('Gagal mengupdate status pesanan:', error);
-      alert('Gagal mengubah status pesanan.');
-      return;
-    }
+      if (error) {
+        console.error('Gagal mengupdate status pesanan:', error);
+        alert('Gagal mengubah status pesanan.');
+        return;
+      }
 
-    setOrders((prev) =>
-      prev.map((ord) => (ord.id === orderId ? { ...ord, status: nextStatus } : ord))
-    );
-    if (activeReceipt?.id === orderId) {
-      setActiveReceipt((prev) => (prev ? { ...prev, status: nextStatus } : null));
-    }
-  };
+      setOrders((prev) =>
+        prev.map((ord) => (ord.id === orderId ? { ...ord, status: nextStatus } : ord))
+      );
+      if (activeReceipt?.id === orderId) {
+        setActiveReceipt((prev) => (prev ? { ...prev, status: nextStatus } : null));
+      }
+    },
+    [activeReceipt?.id]
+  );
+
+  const handleScannedOrderCode = useCallback(
+    async (rawCode) => {
+      const cleanCode = String(rawCode || '').trim().toUpperCase();
+      if (!cleanCode) return;
+
+      const targetOrder = ordersRef.current.find(
+        (o) => String(o.orderCode || '').toUpperCase() === cleanCode
+      );
+
+      if (!targetOrder) {
+        setScanFeedback({ type: 'error', text: `Kode ${cleanCode} tidak ditemukan.` });
+        return;
+      }
+
+      if (targetOrder.status !== 'Konfirmasi Kasir') {
+        setScanFeedback({
+          type: 'info',
+          text: `Order ${cleanCode} sudah berstatus "${targetOrder.status}".`,
+        });
+        return;
+      }
+
+      await updateOrderStatus(targetOrder.id, 'Menunggu Masak');
+      setScanFeedback({
+        type: 'success',
+        text: `Order ${cleanCode} terkonfirmasi & masuk ke antrean masak!`,
+      });
+    },
+    [updateOrderStatus]
+  );
+
+  useEffect(() => {
+    if (!isScannerOpen || activeTab !== 'kitchen') return;
+
+    const html5QrCode = new Html5Qrcode('qr-reader');
+    let isMounted = true;
+
+    html5QrCode
+      .start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
+        async (decodedText) => {
+          if (!isMounted) return;
+          await handleScannedOrderCode(decodedText);
+          setIsScannerOpen(false);
+        },
+        () => {}
+      )
+      .catch((err) => {
+        console.error('Gagal menyalakan kamera:', err);
+        if (isMounted) {
+          setScanFeedback({
+            type: 'error',
+            text: 'Kamera gagal dibuka. Cek izin kamera atau gunakan input kode manual.',
+          });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      html5QrCode
+        .stop()
+        .then(() => html5QrCode.clear())
+        .catch(() => {});
+    };
+  }, [isScannerOpen, activeTab, handleScannedOrderCode]);
 
   const clearOrders = async () => {
     const { error } = await supabase
@@ -484,10 +493,6 @@ const validateCustomerName = () => {
     URL.revokeObjectURL(url);
   };
 
-  const qrisPayload = useMemo(() => {
-    return `00020101021226620014ID.CO.QRIS.WWW01189360099900000000000215${CAFE_CONFIG.nmid}0303UMI520458145303360540${grandTotal}5802ID5915${CAFE_CONFIG.qrisMerchantName}6006DEPOK6304ABCD`;
-  }, [grandTotal]);
-
   const isCustomerView = activeTab === 'menu' && !isStaffUnlocked;
 
   return (
@@ -541,7 +546,7 @@ const validateCustomerName = () => {
                 Dapur
                 {orders.length > 0 && (
                   <span
-                    className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] font-bold ${
+                    className={`rounded-full px-1.5 py-0.5 font-mono text-[10px] font-bold ${
                       activeTab === 'kitchen'
                         ? 'bg-zinc-950 text-amber-400'
                         : 'bg-amber-500/20 text-amber-400'
@@ -587,7 +592,6 @@ const validateCustomerName = () => {
       {/* TAB 1: MENU SELF-ORDER */}
       {activeTab === 'menu' && (
         <main className="mx-auto max-w-6xl px-4 py-6">
-          {/* Industrial Hero + Table Detection Bar */}
           <section className="mb-8 rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900 via-zinc-900 to-zinc-950 p-5 sm:p-7">
             <div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-center">
               <div className="space-y-2">
@@ -603,7 +607,6 @@ const validateCustomerName = () => {
                 </p>
               </div>
 
-              {/* Simulasi / Override Nomor Meja (hanya muncul saat mode staf aktif atau belum ada ?meja=) */}
               {(!isCustomerView || !tableNumber) && (
                 <form
                   onSubmit={applyManualTable}
@@ -734,85 +737,84 @@ const validateCustomerName = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-    <button
-      type="button"
-      onClick={() => {
-        setScanFeedback(null);
-        setIsScannerOpen((prev) => !prev);
-      }}
-      className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400"
-    >
-      <QrCode className="h-3.5 w-3.5" />
-      {isScannerOpen ? 'Tutup Kamera' : 'Scan QR Kasir'}
-    </button>
-
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        handleScannedOrderCode(manualCodeInput);
-        setManualCodeInput('');
-      }}
-      className="flex items-center gap-1.5"
-    >
-      <input
-        type="text"
-        value={manualCodeInput}
-        onChange={(e) => setManualCodeInput(e.target.value)}
-        placeholder="ORD-XXXXXX"
-        className="w-28 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-amber-500 focus:outline-none"
-      />
-      <button
-        type="submit"
-        className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-amber-500 hover:text-amber-400"
-      >
-        Konfirmasi
-      </button>
-    </form>
-
-            {orders.length > 0 && (
               <button
-                onClick={clearOrders}
-                className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                type="button"
+                onClick={() => {
+                  setScanFeedback(null);
+                  setIsScannerOpen((prev) => !prev);
+                }}
+                className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400"
               >
-                <Trash2 className="h-3.5 w-3.5" />
-                Bersihkan Riwayat
+                <QrCode className="h-3.5 w-3.5" />
+                {isScannerOpen ? 'Tutup Kamera' : 'Scan QR Kasir'}
               </button>
-            )}
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleScannedOrderCode(manualCodeInput);
+                  setManualCodeInput('');
+                }}
+                className="flex items-center gap-1.5"
+              >
+                <input
+                  type="text"
+                  value={manualCodeInput}
+                  onChange={(e) => setManualCodeInput(e.target.value)}
+                  placeholder="ORD-XXXXXX"
+                  className="w-28 rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs text-white placeholder:text-zinc-600 focus:border-amber-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-amber-500 hover:text-amber-400"
+                >
+                  Konfirmasi
+                </button>
+              </form>
+
+              {orders.length > 0 && (
+                <button
+                  onClick={clearOrders}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Bersihkan Riwayat
+                </button>
+              )}
+            </div>
           </div>
-        </div>
 
-        {scanFeedback && (
-  <div
-    className={`mb-4 rounded-xl border px-4 py-3 text-xs font-semibold ${
-      scanFeedback.type === 'success'
-        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-        : scanFeedback.type === 'info'
-        ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-        : 'border-rose-500/40 bg-rose-500/10 text-rose-300'
-    }`}
-  >
-    {scanFeedback.text}
-  </div>
-)}
+          {scanFeedback && (
+            <div
+              className={`mb-4 rounded-xl border px-4 py-3 text-xs font-semibold ${
+                scanFeedback.type === 'success'
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : scanFeedback.type === 'info'
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                  : 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+              }`}
+            >
+              {scanFeedback.text}
+            </div>
+          )}
 
-  {isScannerOpen && (
-    <div className="mb-6 rounded-2xl border border-amber-500/40 bg-zinc-900 p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="font-mono text-xs font-bold uppercase text-amber-400">
-          Arahkan Kamera ke QR Code Pelanggan
-        </span>
-        <button
-          type="button"
-          onClick={() => setIsScannerOpen(false)}
-          className="rounded-lg border border-zinc-700 p-1 text-zinc-400 hover:text-white"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-      <div id="qr-reader" className="mx-auto max-w-sm overflow-hidden rounded-xl bg-zinc-950" />
-    </div>
-  )}
-  ```[cite: 1, 6]  
+          {isScannerOpen && (
+            <div className="mb-6 rounded-2xl border border-amber-500/40 bg-zinc-900 p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-mono text-xs font-bold uppercase text-amber-400">
+                  Arahkan Kamera ke QR Code Pelanggan
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsScannerOpen(false)}
+                  className="rounded-lg border border-zinc-700 p-1 text-zinc-400 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div id="qr-reader" className="mx-auto max-w-sm overflow-hidden rounded-xl bg-zinc-950" />
+            </div>
+          )}
 
           {orders.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/40 p-12 text-center">
@@ -876,7 +878,11 @@ const validateCustomerName = () => {
                   <div className="border-t border-zinc-800 pt-3">
                     <div className="mb-3 flex items-center justify-between text-xs">
                       <span className="text-zinc-400">
-                        Bayar: <strong className="text-zinc-200">{ord.paymentMethod || (ord.status === "Konfirmasi Kasir" ? "Kasir" : "QRIS")}</strong>
+                        Bayar:{' '}
+                        <strong className="text-zinc-200">
+                          {ord.paymentMethod ||
+                            (ord.status === 'Konfirmasi Kasir' ? 'Kasir' : 'QRIS')}
+                        </strong>
                       </span>
                       <span className="font-mono text-sm font-bold text-amber-400">
                         {formatIDR(ord.total)}
@@ -1004,7 +1010,8 @@ const validateCustomerName = () => {
               </button>
             </div>
             <p className="mb-3 text-xs text-zinc-400">
-              Masukkan PIN staf (default demo: <span className="font-mono text-amber-400">1234</span>).
+              Masukkan PIN staf (default demo:{' '}
+              <span className="font-mono text-amber-400">1234</span>).
             </p>
             <input
               type="password"
@@ -1345,42 +1352,43 @@ const validateCustomerName = () => {
                     <CheckCircle2 className="h-5 w-5" />
                     <span className="text-sm font-bold">Pesanan Berhasil Dibuat!</span>
                   </div>
-                  
-                <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
-                   <div className="flex justify-between gap-2">
-                    <span className="text-zinc-500">ID Order</span>
-                    <span className="text-white">{activeReceipt.orderCode || activeReceipt.id}</span>
+
+                  <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-500">ID Order</span>
+                      <span className="text-white">{activeReceipt.orderCode || activeReceipt.id}</span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-500">Lokasi</span>
+                      <span className="text-amber-400">{activeReceipt.table}</span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-500">Pemesan</span>
+                      <span className="text-zinc-200">{activeReceipt.customerName}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-zinc-500">Status Dapur</span>
+                      <span className="inline-flex shrink-0 items-center gap-1 text-amber-400">
+                        <Clock className="h-3 w-3" />
+                        {activeReceipt.status}
+                      </span>
+                    </div>
                   </div>
-                <div className="flex justify-between gap-2">
-                    <span className="text-zinc-500">Lokasi</span>
-                    <span className="text-amber-400">{activeReceipt.table}</span>                          
-                  </div>
-                <div className="flex justify-between gap-2">
-                    <span className="text-zinc-500">Pemesan</span>
-                    <span className="text-zinc-200">{activeReceipt.customerName}</span>
-                  </div>
-                <div className="flex items-center justify-between gap-2">
-                    <span className="text-zinc-500">Status Dapur</span>
-                    <span className="inline-flex shrink-0 items-center gap-1 text-amber-400">
-                          <Clock className="h-3 w-3" />
-                              {activeReceipt.status}
-                    </span>
-                  </div>
-                </div>
-                    
-              {activeReceipt.paymentMethod === 'KASIR' && activeReceipt.status === 'Konfirmasi Kasir' && (
-                <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
-                  <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
-                        Tunjukkan QR Ini ke Kasir
-                  </span>
-                <div className="rounded-lg bg-white p-2">
-                  <QRCodeSVG value={activeReceipt.orderCode || activeReceipt.id} size={120} />
-                </div>
-                  <span className="mt-2 font-mono text-xs font-bold text-white">
-                    {activeReceipt.orderCode || activeReceipt.id}
-                  </span>
-                </div>
-              )}
+
+                  {activeReceipt.paymentMethod === 'KASIR' &&
+                    activeReceipt.status === 'Konfirmasi Kasir' && (
+                      <div className="flex flex-col items-center rounded-xl border border-amber-500/30 bg-zinc-900 p-3 text-center">
+                        <span className="mb-2 font-mono text-[10px] uppercase tracking-wider text-amber-400">
+                          Tunjukkan QR Ini ke Kasir
+                        </span>
+                        <div className="rounded-lg bg-white p-2">
+                          <QRCodeSVG value={activeReceipt.orderCode || activeReceipt.id} size={120} />
+                        </div>
+                        <span className="mt-2 font-mono text-xs font-bold text-white">
+                          {activeReceipt.orderCode || activeReceipt.id}
+                        </span>
+                      </div>
+                    )}
 
                   <div className="space-y-2 text-xs">
                     {activeReceipt.items.map((it) => (

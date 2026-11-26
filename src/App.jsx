@@ -768,7 +768,7 @@ export default function App() {
                   type="submit"
                   className="rounded-xl border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-200 hover:border-amber-500 hover:text-amber-400"
                 >
-                  Konfirmasi
+                  Cari Kode
                 </button>
               </form>
 
@@ -826,94 +826,122 @@ export default function App() {
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {orders.map((ord) => (
-                <div
-                  key={ord.id}
-                  className="flex flex-col justify-between rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
-                >
-                  <div>
-                    <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
-                      <div>
-                        <span className="font-mono text-xs font-bold text-amber-400">
-                          {ord.orderCode || ord.id}
-                        </span>
-                        <p className="text-sm font-bold text-white">
-                          {ord.table} • {ord.customerName}
-                        </p>
-                      </div>
-                      <span className="font-mono text-xs text-zinc-400">{ord.createdAt}</span>
-                    </div>
+              {orders.map((ord) => {
+                const isPendingPayment = ord.status === 'Konfirmasi Kasir';
 
-                    <div className="my-3 space-y-2.5">
-                      {ord.items.map((it) => (
-                        <div key={it.cartId} className="rounded-lg bg-zinc-950/70 p-2.5 text-xs">
-                          <div className="flex justify-between font-semibold text-zinc-100">
-                            <span>
-                              {it.qty}x {it.name}
+                return (
+                  <div
+                    key={ord.id}
+                    className="flex flex-col justify-between rounded-2xl border border-zinc-800 bg-zinc-900 p-4"
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2 border-b border-zinc-800 pb-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs font-bold text-amber-400">
+                              {ord.orderCode || ord.id}
                             </span>
-                            <span className="font-mono text-zinc-400">
-                              {formatIDR(it.unitPrice * it.qty)}
-                            </span>
+
+                            {isPendingPayment ? (
+                              <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-amber-300">
+                                Menunggu Pembayaran
+                              </span>
+                            ) : (
+                              <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-300">
+                                Pembayaran Berhasil
+                              </span>
+                            )}
                           </div>
-                          {it.variantSummary && (
-                            <p className="mt-0.5 text-[11px] text-amber-400/90">
-                              {it.variantSummary}
-                            </p>
-                          )}
-                          {it.addons?.length > 0 && (
-                            <p className="mt-0.5 text-[11px] text-zinc-400">
-                              + {it.addons.map((a) => a.name).join(', ')}
-                            </p>
-                          )}
-                          {it.note && (
-                            <p className="mt-1 italic text-[11px] text-zinc-500">
-                              Catatan: &ldquo;{it.note}&rdquo;
-                            </p>
-                          )}
+
+                          <p className="mt-1 text-sm font-bold text-white">
+                            {ord.table} • {ord.customerName}
+                          </p>
                         </div>
-                      ))}
+
+                        <span className="font-mono text-xs text-zinc-400">{ord.createdAt}</span>
+                      </div>
+
+                      <div className="my-3 space-y-2.5">
+                        {ord.items.map((it) => (
+                          <div key={it.cartId} className="rounded-lg bg-zinc-950/70 p-2.5 text-xs">
+                            <div className="flex justify-between font-semibold text-zinc-100">
+                              <span>
+                                {it.qty}x {it.name}
+                              </span>
+                              <span className="font-mono text-zinc-400">
+                                {formatIDR(it.unitPrice * it.qty)}
+                              </span>
+                            </div>
+                            {it.variantSummary && (
+                              <p className="mt-0.5 text-[11px] text-amber-400/90">
+                                {it.variantSummary}
+                              </p>
+                            )}
+                            {it.addons?.length > 0 && (
+                              <p className="mt-0.5 text-[11px] text-zinc-400">
+                                + {it.addons.map((a) => a.name).join(', ')}
+                              </p>
+                            )}
+                            {it.note && (
+                              <p className="mt-1 italic text-[11px] text-zinc-500">
+                                Catatan: &ldquo;{it.note}&rdquo;
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="border-t border-zinc-800 pt-3">
+                      <div className="mb-3 flex items-center justify-between text-xs">
+                        <span className="text-zinc-400">
+                          Bayar:{' '}
+                          <strong className="text-zinc-200">
+                            {ord.paymentMethod || (isPendingPayment ? 'Kasir' : 'QRIS')}
+                          </strong>
+                        </span>
+                        <span className="font-mono text-sm font-bold text-amber-400">
+                          {formatIDR(ord.total)}
+                        </span>
+                      </div>
+
+                      {isPendingPayment ? (
+                        <button
+                          type="button"
+                          onClick={() => updateOrderStatus(ord.id, 'Menunggu Masak')}
+                          className="w-full rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-zinc-950 transition hover:bg-emerald-400"
+                        >
+                          Konfirmasi Pembayaran
+                        </button>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {['Menunggu Masak', 'Sedang Disiapkan', 'Siap'].map((st) => {
+                            const isCurrent = ord.status === st;
+                            return (
+                              <button
+                                key={st}
+                                type="button"
+                                onClick={() => updateOrderStatus(ord.id, st)}
+                                className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
+                                  isCurrent
+                                    ? 'bg-amber-500 text-zinc-950'
+                                    : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
+                                }`}
+                              >
+                                {st === 'Menunggu Masak'
+                                  ? 'Antre'
+                                  : st === 'Sedang Disiapkan'
+                                  ? 'Proses'
+                                  : 'Siap'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
-
-                  <div className="border-t border-zinc-800 pt-3">
-                    <div className="mb-3 flex items-center justify-between text-xs">
-                      <span className="text-zinc-400">
-                        Bayar:{' '}
-                        <strong className="text-zinc-200">
-                          {ord.paymentMethod ||
-                            (ord.status === 'Konfirmasi Kasir' ? 'Kasir' : 'QRIS')}
-                        </strong>
-                      </span>
-                      <span className="font-mono text-sm font-bold text-amber-400">
-                        {formatIDR(ord.total)}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {['Menunggu Masak', 'Sedang Disiapkan', 'Siap'].map((st) => {
-                        const isCurrent = ord.status === st;
-                        return (
-                          <button
-                            key={st}
-                            onClick={() => updateOrderStatus(ord.id, st)}
-                            className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold transition ${
-                              isCurrent
-                                ? 'bg-amber-500 text-zinc-950'
-                                : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white'
-                            }`}
-                          >
-                            {st === 'Menunggu Masak'
-                              ? 'Antre'
-                              : st === 'Sedang Disiapkan'
-                              ? 'Proses'
-                              : 'Siap'}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </main>

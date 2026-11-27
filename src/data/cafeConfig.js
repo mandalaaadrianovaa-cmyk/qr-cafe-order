@@ -16,6 +16,7 @@ export const CAFE_CONFIG = {
       category: "Signature Coffee",
       price: 22000,
       image: "https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&w=600&q=80",
+      available: false, // otomatis tampil badge Sold Out & tombol Habis
       description: "Perpaduan espresso house blend, susu segar creamy, dan gula aren organik.",
       popular: true,
       options: {

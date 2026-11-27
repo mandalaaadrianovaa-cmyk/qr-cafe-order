@@ -22,6 +22,9 @@ import {
   History,
   Download,
   CheckCheck,
+  Volume2,
+  VolumeX,
+  Search,
 } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
@@ -30,6 +33,10 @@ const OWNER_PIN = CAFE_CONFIG.ownerPin || '9999';
 
 const formatIDR = (amount) => {
   return `${CAFE_CONFIG.currency} ${Number(amount || 0).toLocaleString('id-ID')}`;
+};
+
+const isMenuSoldOut = (menu) => {
+  return menu?.soldOut === true || menu?.available === false || menu?.inStock === false;
 };
 
 const getTableFromUrl = () => {
@@ -135,10 +142,19 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const ordersRef = useRef(orders);
 
+  // Notifikasi Suara Pesanan Masuk
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const soundEnabledRef = useRef(soundEnabled);
+  const audioCtxRef = useRef(null);
+
   // State Scanner QR Kasir
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [manualCodeInput, setManualCodeInput] = useState('');
   const [scanFeedback, setScanFeedback] = useState(null);
+
+  // Filter & Pencarian Riwayat Owner
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyPaymentFilter, setHistoryPaymentFilter] = useState('Semua'); // 'Semua' | 'QRIS' | 'Kasir/Tunai'
 
   // State QR Generator
   const [totalTables, setTotalTables] = useState(10);
@@ -152,6 +168,43 @@ export default function App() {
     ordersRef.current = orders;
   }, [orders]);
 
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  const playOrderDing = useCallback(() => {
+    if (!soundEnabledRef.current || typeof window === 'undefined') return;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new AudioContextClass();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.exponentialRampToValueAtTime(1174.66, now + 0.14);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.46);
+    } catch (err) {
+      console.warn('Tidak dapat memutar suara notifikasi:', err);
+    }
+  }, []);
+
   const fetchOrders = useCallback(async () => {
     const { data, error } = await supabase
       .from('orders')
@@ -164,7 +217,13 @@ export default function App() {
     }
 
     if (Array.isArray(data)) {
-      setOrders(data.map(mapDbRowToOrder));
+      const mapped = data.map(mapDbRowToOrder);
+      setOrders(mapped);
+      setActiveReceipt((prev) => {
+        if (!prev) return prev;
+        const updated = mapped.find((item) => item.id === prev.id);
+        return updated ? { ...prev, status: updated.status } : prev;
+      });
     }
   }, []);
 
@@ -176,7 +235,10 @@ export default function App() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'orders' },
-        () => {
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            playOrderDing();
+          }
           fetchOrders();
         }
       )
@@ -185,7 +247,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [fetchOrders]);
+  }, [fetchOrders, playOrderDing]);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -270,6 +332,7 @@ export default function App() {
   }, [selectedCategory]);
 
   const openCustomizeModal = (menu) => {
+    if (isMenuSoldOut(menu)) return;
     setActiveItem(menu);
     setSelectedTemp(menu.options?.temperature?.[0] || '');
     setSelectedSugar(menu.options?.sugar?.[0] || '');
@@ -435,7 +498,7 @@ export default function App() {
       if (targetOrder.status !== 'Konfirmasi Kasir') {
         setScanFeedback({
           type: 'info',
-          text: `Order ${cleanCode} sudah berstatus "${targetOrder.status}".`,
+          text: `${cleanCode} • ${targetOrder.table} (${targetOrder.customerName}) sudah berstatus "${targetOrder.status}" • ${formatIDR(targetOrder.total)}.`,
         });
         return;
       }
@@ -443,7 +506,7 @@ export default function App() {
       await updateOrderStatus(targetOrder.id, 'Menunggu Masak');
       setScanFeedback({
         type: 'success',
-        text: `Order ${cleanCode} terkonfirmasi & masuk ke antrean masak!`,
+        text: `${cleanCode} • ${targetOrder.table} (${targetOrder.customerName}) • ${formatIDR(targetOrder.total)} terkonfirmasi & masuk ke antrean masak!`,
       });
     },
     [updateOrderStatus]
@@ -522,9 +585,23 @@ export default function App() {
     [orders]
   );
 
-  const clearedRevenue = useMemo(
-    () => clearedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
-    [clearedOrders]
+  const filteredClearedOrders = useMemo(() => {
+    const q = historySearch.trim().toLowerCase();
+    return clearedOrders.filter((ord) => {
+      const matchesMethod =
+        historyPaymentFilter === 'Semua' || ord.paymentMethod === historyPaymentFilter;
+      const matchesQuery =
+        !q ||
+        String(ord.orderCode || '').toLowerCase().includes(q) ||
+        String(ord.customerName || '').toLowerCase().includes(q) ||
+        String(ord.table || '').toLowerCase().includes(q);
+      return matchesMethod && matchesQuery;
+    });
+  }, [clearedOrders, historySearch, historyPaymentFilter]);
+
+  const filteredClearedRevenue = useMemo(
+    () => filteredClearedOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
+    [filteredClearedOrders]
   );
 
   const exportClearedToCsv = () => {
@@ -539,7 +616,7 @@ export default function App() {
       'Total',
       'Status',
     ];
-    const rows = clearedOrders.map((o) => {
+    const rows = filteredClearedOrders.map((o) => {
       const itemSummary = Array.isArray(o.items)
         ? o.items.map((it) => `${it.qty}x ${it.name}`).join(' | ')
         : '';
@@ -766,61 +843,83 @@ export default function App() {
 
           {/* Menu Grid */}
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            {filteredMenus.map((menu) => (
-              <article
-                key={menu.id}
-                className="group flex flex-col justify-between overflow-hidden rounded-2xl border border-zinc-800/90 bg-zinc-900/60 transition hover:border-amber-500/50 hover:bg-zinc-900"
-              >
-                <div>
-                  <div className="relative h-44 w-full overflow-hidden bg-zinc-950">
-                    <img
-                      src={menu.image}
-                      alt={menu.name}
-                      className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
-                      loading="lazy"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-transparent" />
-                    <span className="absolute left-3 top-3 rounded-md border border-zinc-700/80 bg-zinc-950/85 px-2.5 py-1 font-mono text-[11px] text-zinc-300">
-                      {menu.category}
-                    </span>
-                    {menu.popular && (
-                      <span className="absolute right-3 top-3 flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-zinc-950">
-                        <Flame className="h-3 w-3" />
-                        Best Seller
-                      </span>
-                    )}
-                  </div>
+            {filteredMenus.map((menu) => {
+              const soldOut = isMenuSoldOut(menu);
 
-                  <div className="p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-base font-bold text-white">{menu.name}</h3>
-                    </div>
-                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-400">
-                      {menu.description}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between border-t border-zinc-800/80 px-4 py-3.5">
+              return (
+                <article
+                  key={menu.id}
+                  className={`group flex flex-col justify-between overflow-hidden rounded-2xl border transition ${
+                    soldOut
+                      ? 'border-zinc-800/60 bg-zinc-900/35 opacity-75'
+                      : 'border-zinc-800/90 bg-zinc-900/60 hover:border-amber-500/50 hover:bg-zinc-900'
+                  }`}
+                >
                   <div>
-                    <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-                      Harga Mulai
-                    </span>
-                    <span className="font-mono text-sm font-bold text-amber-400">
-                      {formatIDR(menu.price)}
-                    </span>
+                    <div className="relative h-44 w-full overflow-hidden bg-zinc-950">
+                      <img
+                        src={menu.image}
+                        alt={menu.name}
+                        className={`h-full w-full object-cover transition duration-500 ${
+                          soldOut ? 'grayscale' : 'group-hover:scale-105'
+                        }`}
+                        loading="lazy"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/80 via-transparent to-transparent" />
+                      <span className="absolute left-3 top-3 rounded-md border border-zinc-700/80 bg-zinc-950/85 px-2.5 py-1 font-mono text-[11px] text-zinc-300">
+                        {menu.category}
+                      </span>
+                      {soldOut ? (
+                        <span className="absolute right-3 top-3 rounded-md border border-rose-500/50 bg-rose-950/90 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-rose-300">
+                          Sold Out
+                        </span>
+                      ) : (
+                        menu.popular && (
+                          <span className="absolute right-3 top-3 flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-zinc-950">
+                            <Flame className="h-3 w-3" />
+                            Best Seller
+                          </span>
+                        )
+                      )}
+                    </div>
+
+                    <div className="p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="text-base font-bold text-white">{menu.name}</h3>
+                      </div>
+                      <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-400">
+                        {menu.description}
+                      </p>
+                    </div>
                   </div>
 
-                  <button
-                    onClick={() => openCustomizeModal(menu)}
-                    className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400 active:scale-95"
-                  >
-                    <Plus className="h-4 w-4" />
-                    Pilih
-                  </button>
-                </div>
-              </article>
-            ))}
+                  <div className="flex items-center justify-between border-t border-zinc-800/80 px-4 py-3.5">
+                    <div>
+                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                        Harga Mulai
+                      </span>
+                      <span className="font-mono text-sm font-bold text-amber-400">
+                        {formatIDR(menu.price)}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={soldOut}
+                      onClick={() => openCustomizeModal(menu)}
+                      className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                        soldOut
+                          ? 'cursor-not-allowed border border-zinc-700 bg-zinc-800 text-zinc-500'
+                          : 'bg-amber-500 text-zinc-950 hover:bg-amber-400 active:scale-95'
+                      }`}
+                    >
+                      <Plus className="h-4 w-4" />
+                      {soldOut ? 'Habis' : 'Pilih'}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </main>
       )}
@@ -832,11 +931,29 @@ export default function App() {
             <div>
               <h2 className="text-xl font-bold text-white">Layar Antrean Dapur & Kasir</h2>
               <p className="text-xs text-zinc-400">
-                Pesanan aktif tampil di sini. Tandai <span className="text-emerald-400 font-semibold">Clear</span> bila pesanan sudah diserahkan agar masuk ke Riwayat Owner.
+                Pesanan aktif tampil di sini. Tandai <span className="font-semibold text-emerald-400">Clear</span> bila pesanan sudah diserahkan agar masuk ke Riwayat Owner.
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSoundEnabled((prev) => !prev)}
+                className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                  soundEnabled
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-zinc-700 bg-zinc-900 text-zinc-400'
+                }`}
+                title="Toggle suara notifikasi pesanan baru"
+              >
+                {soundEnabled ? (
+                  <Volume2 className="h-3.5 w-3.5" />
+                ) : (
+                  <VolumeX className="h-3.5 w-3.5" />
+                )}
+                {soundEnabled ? 'Suara Aktif' : 'Suara Muted'}
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
@@ -1120,7 +1237,7 @@ export default function App() {
         </main>
       )}
 
-      {/* TAB 4: RIWAYAT OWNER (CLEAR ORDERS + CSV EXPORT + HAPUS SEMENTARA) */}
+      {/* TAB 4: RIWAYAT OWNER (CLEAR ORDERS + FILTER + CSV EXPORT + HAPUS SEMENTARA) */}
       {activeTab === 'riwayat' && (
         <main className="mx-auto max-w-6xl px-4 py-6">
           <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -1138,7 +1255,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={exportClearedToCsv}
-                disabled={clearedOrders.length === 0}
+                disabled={filteredClearedOrders.length === 0}
                 className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -1158,32 +1275,78 @@ export default function App() {
             </div>
           </div>
 
+          {/* Filter & Pencarian */}
+          <div className="mb-6 flex flex-col gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-500" />
+              <input
+                type="text"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder="Cari kode ORD, nama pemesan, atau meja..."
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 py-2 pl-9 pr-3 text-xs text-white placeholder:text-zinc-500 focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {['Semua', 'QRIS', 'Kasir/Tunai'].map((method) => {
+                const active = historyPaymentFilter === method;
+                return (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => setHistoryPaymentFilter(method)}
+                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                      active
+                        ? 'border-amber-500 bg-amber-500 text-zinc-950'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-600'
+                    }`}
+                  >
+                    {method}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Ringkasan */}
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
               <span className="font-mono text-[11px] uppercase text-zinc-400">
-                Total Order Clear
+                Order Clear Terfilter
               </span>
               <p className="mt-1 font-mono text-2xl font-extrabold text-white">
-                {clearedOrders.length}
+                {filteredClearedOrders.length}
               </p>
             </div>
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-4">
               <span className="font-mono text-[11px] uppercase text-zinc-400">
-                Total Omzet Tercatat (Clear)
+                Total Omzet Terfilter (Clear)
               </span>
               <p className="mt-1 font-mono text-2xl font-extrabold text-emerald-400">
-                {formatIDR(clearedRevenue)}
+                {formatIDR(filteredClearedRevenue)}
               </p>
             </div>
           </div>
 
-          {clearedOrders.length === 0 ? (
+          {filteredClearedOrders.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-zinc-800 bg-zinc-900/40 p-12 text-center">
               <History className="mx-auto mb-3 h-10 w-10 text-zinc-600" />
-              <p className="text-sm font-semibold text-zinc-300">Belum ada pesanan berstatus Clear</p>
+              <p className="text-sm font-semibold text-zinc-300">
+                {clearedOrders.length === 0
+                  ? 'Belum ada pesanan berstatus Clear'
+                  : 'Tidak ada riwayat yang cocok dengan filter'}
+              </p>
               <p className="mt-1 text-xs text-zinc-500">
-                Set pesanan di tab <span className="text-amber-400">Dapur</span> ke <span className="text-zinc-200">Siap</span> lalu klik <span className="text-emerald-400">Selesai & Pindahkan ke Riwayat (Clear)</span>.
+                {clearedOrders.length === 0 ? (
+                  <>
+                    Set pesanan di tab <span className="text-amber-400">Dapur</span> ke{' '}
+                    <span className="text-zinc-200">Siap</span> lalu klik{' '}
+                    <span className="text-emerald-400">Selesai & Pindahkan ke Riwayat (Clear)</span>.
+                  </>
+                ) : (
+                  'Coba ubah kata kunci pencarian atau pilih filter metode pembayaran Semua.'
+                )}
               </p>
             </div>
           ) : (
@@ -1200,7 +1363,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/80">
-                  {clearedOrders.map((ord) => (
+                  {filteredClearedOrders.map((ord) => (
                     <tr key={ord.id} className="hover:bg-zinc-950/40">
                       <td className="px-4 py-3 font-mono font-bold text-amber-400">
                         {ord.orderCode || ord.id}
@@ -1600,9 +1763,18 @@ export default function App() {
 
               {checkoutStep === 'receipt' && activeReceipt && (
                 <div className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                  <div className="flex items-center gap-2 text-emerald-400">
-                    <CheckCircle2 className="h-5 w-5" />
-                    <span className="text-sm font-bold">Pesanan Berhasil Dibuat!</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-emerald-400">
+                      <CheckCircle2 className="h-5 w-5" />
+                      <span className="text-sm font-bold">Pesanan Berhasil Dibuat!</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchOrders}
+                      className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1 font-mono text-[10px] text-zinc-300 hover:border-amber-500 hover:text-amber-400"
+                    >
+                      Refresh Status
+                    </button>
                   </div>
 
                   <div className="space-y-1 border-y border-dashed border-zinc-800 py-3 font-mono text-xs">
@@ -1619,8 +1791,14 @@ export default function App() {
                       <span className="text-zinc-200">{activeReceipt.customerName}</span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-zinc-500">Status Dapur</span>
-                      <span className="inline-flex shrink-0 items-center gap-1 text-amber-400">
+                      <span className="text-zinc-500">Status Pesanan</span>
+                      <span
+                        className={`inline-flex shrink-0 items-center gap-1 font-semibold ${
+                          activeReceipt.status === 'Siap' || activeReceipt.status === 'Clear'
+                            ? 'text-emerald-400'
+                            : 'text-amber-400'
+                        }`}
+                      >
                         <Clock className="h-3 w-3" />
                         {activeReceipt.status}
                       </span>

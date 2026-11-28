@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import * as XLSX from 'xlsx';
 import { CAFE_CONFIG } from './data/cafeConfig';
 import { Html5Qrcode } from 'html5-qrcode';
 import {
@@ -20,7 +21,7 @@ import {
   ChefHat,
   Lock,
   History,
-  Download,
+  FileSpreadsheet,
   CheckCheck,
   Volume2,
   VolumeX,
@@ -644,48 +645,73 @@ export default function App() {
     [filteredClearedOrders]
   );
 
-  const exportClearedToCsv = () => {
-    const headers = [
-      'Order Code',
-      'Tanggal',
-      'Waktu',
-      'Meja/Tipe',
-      'Pemesan',
-      'Metode Pembayaran',
-      'Item',
-      'Total',
-      'Status',
-    ];
-    const rows = filteredClearedOrders.map((o) => {
+  const exportClearedToExcel = () => {
+    if (filteredClearedOrders.length === 0) return;
+
+    const rows = filteredClearedOrders.map((o, idx) => {
       const itemSummary = Array.isArray(o.items)
-        ? o.items.map((it) => `${it.qty}x ${it.name}`).join(' | ')
+        ? o.items
+            .map((it) => {
+              const variant = it.variantSummary ? ` (${it.variantSummary})` : '';
+              const addons =
+                it.addons?.length > 0
+                  ? ` + ${it.addons.map((a) => a.name).join(', ')}`
+                  : '';
+              const note = it.note ? ` [Cat: ${it.note}]` : '';
+              return `${it.qty}x ${it.name}${variant}${addons}${note}`;
+            })
+            .join(', ')
         : '';
-      return [
-        o.orderCode,
-        o.createdDate,
-        o.createdAt,
-        o.table,
-        o.customerName,
-        o.paymentMethod,
-        itemSummary,
-        o.total,
-        o.status,
-      ];
+
+      return {
+        No: idx + 1,
+        'Order Code': o.orderCode,
+        Tanggal: o.createdDate || '-',
+        Waktu: o.createdAt || '-',
+        'Meja / Tipe': o.table,
+        Pemesan: o.customerName,
+        'Detail Pesanan': itemSummary,
+        'Metode Pembayaran': o.paymentMethod,
+        'Total (Rp)': Number(o.total || 0),
+        Status: o.status,
+      };
     });
 
-    const csvContent =
-      '\uFEFF' +
-      [headers, ...rows]
-        .map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
-        .join('\n');
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const totalRowIndex = rows.length + 2;
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `riwayat-order-clear-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    XLSX.utils.sheet_add_aoa(
+      worksheet,
+      [['', '', '', '', '', '', '', 'TOTAL OMZET', { f: `SUM(I2:I${rows.length + 1})` }, '']],
+      { origin: `A${totalRowIndex}` }
+    );
+
+    for (let r = 2; r <= totalRowIndex; r++) {
+      const cellRef = `I${r}`;
+      if (worksheet[cellRef]) {
+        worksheet[cellRef].z = '"Rp"#,##0';
+      }
+    }
+
+    worksheet['!cols'] = [
+      { wch: 5 },  // No
+      { wch: 14 }, // Order Code
+      { wch: 13 }, // Tanggal
+      { wch: 10 }, // Waktu
+      { wch: 14 }, // Meja / Tipe
+      { wch: 18 }, // Pemesan
+      { wch: 44 }, // Detail Pesanan
+      { wch: 18 }, // Metode Pembayaran
+      { wch: 18 }, // Total (Rp)
+      { wch: 10 }, // Status
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Riwayat Penjualan');
+
+    const today = new Date().toISOString().slice(0, 10);
+    const safeCafeName = String(CAFE_CONFIG.name || 'Kafe').replace(/[^a-zA-Z0-9_-]/g, '_');
+    XLSX.writeFile(workbook, `Laporan_${safeCafeName}_${today}.xlsx`);
   };
 
   const isCustomerView = activeTab === 'menu' && !isStaffUnlocked && !isOwnerUnlocked;
@@ -1439,7 +1465,7 @@ export default function App() {
           </main>
         )}
 
-        {/* TAB 4: RIWAYAT OWNER (CLEAR ORDERS + FILTER + CSV EXPORT + HAPUS SEMENTARA) */}
+        {/* TAB 4: RIWAYAT OWNER (CLEAR ORDERS + FILTER + EXCEL EXPORT + HAPUS SEMENTARA) */}
         {activeTab === 'riwayat' && (
           <main className="mx-auto max-w-6xl px-4 py-6">
             <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
@@ -1456,12 +1482,12 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={exportClearedToCsv}
+                  onClick={exportClearedToExcel}
                   disabled={filteredClearedOrders.length === 0}
-                  className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3.5 py-2 text-xs font-bold text-zinc-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <Download className="h-3.5 w-3.5" />
-                  Export CSV
+                  <FileSpreadsheet className="h-3.5 w-3.5" />
+                  Export Excel (.xlsx)
                 </button>
 
                 {clearedOrders.length > 0 && (
